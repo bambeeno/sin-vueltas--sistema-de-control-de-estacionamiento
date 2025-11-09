@@ -1,0 +1,280 @@
+// Sistema de Estacionamiento con Sensores FC-51 (Infrarrojo)
+// Arduino UNO + 4 Sensores FC-51 + 8 LEDs
+
+// ===== PINES SENSORES FC-51 =====
+// El FC-51 solo tiene 1 pin de señal (OUT)
+#define SENSOR1 2
+#define SENSOR2 4
+#define SENSOR3 6
+#define SENSOR4 8
+
+// ===== PINES LEDS =====
+#define LED_VERDE1 10
+#define LED_ROJO1 11
+#define LED_VERDE2 12
+#define LED_ROJO2 13
+#define LED_VERDE3 A0
+#define LED_ROJO3 A1
+#define LED_VERDE4 A2
+#define LED_ROJO4 A3
+
+// ===== ESTRUCTURA DE DATOS =====
+struct Espacio {
+  int sensorPin;
+  int ledVerde;
+  int ledRojo;
+  int numero;
+  bool ocupado;
+  int modoLED; // 0=apagado, 1=verde, 2=rojo, 3=ambos(reserva)
+};
+
+Espacio espacios[4] = {
+  {SENSOR1, LED_VERDE1, LED_ROJO1, 1, false, 1},
+  {SENSOR2, LED_VERDE2, LED_ROJO2, 2, false, 1},
+  {SENSOR3, LED_VERDE3, LED_ROJO3, 3, false, 1},
+  {SENSOR4, LED_VERDE4, LED_ROJO4, 4, false, 1}
+};
+
+// ===== VARIABLES GLOBALES =====
+unsigned long ultimoParpadeo = 0;
+bool estadoParpadeo = false;
+String comandoBuffer = "";
+
+// ===== SETUP =====
+void setup() {
+  Serial.begin(9600);
+  
+  // Configurar pines
+  for (int i = 0; i < 4; i++) {
+    pinMode(espacios[i].sensorPin, INPUT);
+    pinMode(espacios[i].ledVerde, OUTPUT);
+    pinMode(espacios[i].ledRojo, OUTPUT);
+  }
+  
+  Serial.println("===========================================");
+  Serial.println("  SISTEMA DE ESTACIONAMIENTO FC-51");
+  Serial.println("  Sensores Infrarrojos de Obstáculos");
+  Serial.println("  Con soporte de reservas y control LEDs");
+  Serial.println("===========================================");
+  Serial.println();
+  
+  // Verificar componentes
+  for (int i = 0; i < 4; i++) {
+    Serial.print("Espacio ");
+    Serial.print(espacios[i].numero);
+    Serial.println(":");
+    Serial.print("  Sensor FC-51: Pin ");
+    Serial.println(espacios[i].sensorPin);
+    Serial.print("  LED Verde: Pin ");
+    Serial.println(espacios[i].ledVerde);
+    Serial.print("  LED Rojo: Pin ");
+    Serial.println(espacios[i].ledRojo);
+  }
+  
+  Serial.println();
+  Serial.println("Probando LEDs...");
+  probarLEDs();
+  
+  Serial.println();
+  Serial.println("--- SISTEMA LISTO ---");
+  Serial.println("Comandos aceptados:");
+  Serial.println("  LED:espacio_id:modo");
+  Serial.println("  Modo: 0=apagado, 1=verde, 2=rojo, 3=ambos");
+  Serial.println();
+  Serial.println("NOTA: FC-51 detecta presencia (SI/NO)");
+  Serial.println("  LOW  = Obstáculo detectado (OCUPADO)");
+  Serial.println("  HIGH = Sin obstáculo (LIBRE)");
+  Serial.println();
+  
+  delay(2000);
+}
+
+// ===== LOOP PRINCIPAL =====
+void loop() {
+  // Leer comandos del servidor
+  leerComandos();
+  
+  // Leer sensores FC-51
+  for (int i = 0; i < 4; i++) {
+    bool estadoAnterior = espacios[i].ocupado;
+    
+    // FC-51: LOW = obstáculo detectado (OCUPADO)
+    //        HIGH = sin obstáculo (LIBRE)
+    int lectura = digitalRead(espacios[i].sensorPin);
+    espacios[i].ocupado = (lectura == LOW);
+    
+    // Si cambia el estado, actualizar LEDs automáticamente
+    if (estadoAnterior != espacios[i].ocupado) {
+      if (espacios[i].ocupado) {
+        // Cambió a ocupado: LED rojo
+        espacios[i].modoLED = 2;
+      } else {
+        // Cambió a libre: LED verde
+        espacios[i].modoLED = 1;
+      }
+    }
+  }
+  
+  // Actualizar LEDs (con parpadeo para reservas)
+  actualizarLEDs();
+  
+  // Enviar datos al servidor
+  enviarDatos();
+  
+  // Mostrar estado detallado
+  mostrarEstado();
+  
+  delay(1000);
+}
+
+// ===== FUNCIONES =====
+
+void leerComandos() {
+  while (Serial.available() > 0) {
+    char c = Serial.read();
+    
+    if (c == '\n') {
+      procesarComando(comandoBuffer);
+      comandoBuffer = "";
+    } else {
+      comandoBuffer += c;
+    }
+  }
+}
+
+void procesarComando(String cmd) {
+  // Formato: LED:espacio_id:modo
+  if (cmd.startsWith("LED:")) {
+    int primerDos = cmd.indexOf(':', 4);
+    if (primerDos > 0) {
+      int espacioId = cmd.substring(4, primerDos).toInt();
+      int modo = cmd.substring(primerDos + 1).toInt();
+      
+      if (espacioId >= 1 && espacioId <= 4) {
+        espacios[espacioId - 1].modoLED = modo;
+        Serial.print("✓ LED Espacio ");
+        Serial.print(espacioId);
+        Serial.print(" -> Modo ");
+        Serial.println(modo);
+      }
+    }
+  }
+}
+
+void actualizarLEDs() {
+  // Parpadeo cada 500ms para modo reserva
+  if (millis() - ultimoParpadeo > 500) {
+    ultimoParpadeo = millis();
+    estadoParpadeo = !estadoParpadeo;
+  }
+  
+  for (int i = 0; i < 4; i++) {
+    switch (espacios[i].modoLED) {
+      case 0: // Apagado
+        digitalWrite(espacios[i].ledVerde, LOW);
+        digitalWrite(espacios[i].ledRojo, LOW);
+        break;
+        
+      case 1: // Verde (libre)
+        digitalWrite(espacios[i].ledVerde, HIGH);
+        digitalWrite(espacios[i].ledRojo, LOW);
+        break;
+        
+      case 2: // Rojo (ocupado)
+        digitalWrite(espacios[i].ledVerde, LOW);
+        digitalWrite(espacios[i].ledRojo, HIGH);
+        break;
+        
+      case 3: // Ambos parpadeando (reservado)
+        digitalWrite(espacios[i].ledVerde, estadoParpadeo ? HIGH : LOW);
+        digitalWrite(espacios[i].ledRojo, estadoParpadeo ? HIGH : LOW);
+        break;
+    }
+  }
+}
+
+void probarLEDs() {
+  Serial.println("  -> Verdes...");
+  for (int i = 0; i < 4; i++) {
+    digitalWrite(espacios[i].ledVerde, HIGH);
+    digitalWrite(espacios[i].ledRojo, LOW);
+  }
+  delay(1000);
+  
+  Serial.println("  -> Rojos...");
+  for (int i = 0; i < 4; i++) {
+    digitalWrite(espacios[i].ledVerde, LOW);
+    digitalWrite(espacios[i].ledRojo, HIGH);
+  }
+  delay(1000);
+  
+  Serial.println("  -> Ambos (reserva)...");
+  for (int i = 0; i < 4; i++) {
+    digitalWrite(espacios[i].ledVerde, HIGH);
+    digitalWrite(espacios[i].ledRojo, HIGH);
+  }
+  delay(1000);
+  
+  Serial.println("  -> Listo!");
+  for (int i = 0; i < 4; i++) {
+    digitalWrite(espacios[i].ledVerde, HIGH);
+    digitalWrite(espacios[i].ledRojo, LOW);
+  }
+}
+
+void enviarDatos() {
+  Serial.print("DATA:");
+  for (int i = 0; i < 4; i++) {
+    Serial.print("E");
+    Serial.print(espacios[i].numero);
+    Serial.print(":");
+    Serial.print(espacios[i].ocupado ? "1" : "0");
+    if (i < 3) Serial.print(",");
+  }
+  Serial.println();
+}
+
+void mostrarEstado() {
+  Serial.println();
+  Serial.println("========== ESTADO ACTUAL ==========");
+  
+  for (int i = 0; i < 4; i++) {
+    Serial.print("Espacio ");
+    Serial.print(espacios[i].numero);
+    Serial.print(": ");
+    
+    // Leer estado del sensor
+    int lectura = digitalRead(espacios[i].sensorPin);
+    Serial.print("Sensor=");
+    Serial.print(lectura == LOW ? "DETECTA" : "NO_DETECTA");
+    Serial.print(" | ");
+    
+    // Estado del sensor
+    if (espacios[i].ocupado) {
+      Serial.print("OCUPADO   ");
+    } else {
+      Serial.print("LIBRE     ");
+    }
+    
+    // Estado de los LEDs
+    Serial.print("| LEDs: ");
+    switch (espacios[i].modoLED) {
+      case 0: Serial.println("Apagados"); break;
+      case 1: Serial.println("Verde"); break;
+      case 2: Serial.println("Rojo"); break;
+      case 3: Serial.println("Ambos (RESERVADO)"); break;
+    }
+  }
+  
+  int disponibles = 0;
+  for (int i = 0; i < 4; i++) {
+    if (!espacios[i].ocupado && espacios[i].modoLED != 3) disponibles++;
+  }
+  
+  Serial.println("===================================");
+  Serial.print(">>> DISPONIBLES: ");
+  Serial.print(disponibles);
+  Serial.println(" espacios");
+  Serial.println("===================================");
+  Serial.println();
+}
